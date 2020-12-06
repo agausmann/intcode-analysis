@@ -5,30 +5,32 @@ use std::num::ParseIntError;
 use std::str::FromStr;
 use std::{fmt, ops};
 
+pub type Int = i64;
+
 /// A buffer containing Intcode code.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Intcode(Vec<i64>);
+pub struct Intcode(Vec<Int>);
 
 impl Intcode {
-    pub fn new(ints: Vec<i64>) -> Intcode {
+    pub fn new(ints: Vec<Int>) -> Intcode {
         Self(ints)
     }
 
-    pub fn get(&self, addr: i64) -> Option<&i64> {
+    pub fn get(&self, addr: Int) -> Option<&Int> {
         usize::try_from(addr)
             .ok()
             .and_then(|addr_usize| self.0.get(addr_usize))
     }
 
-    pub fn len(&self) -> i64 {
+    pub fn len(&self) -> Int {
         self.0.len().try_into().expect("len is too big")
     }
 }
 
-impl ops::Index<i64> for Intcode {
-    type Output = i64;
+impl ops::Index<Int> for Intcode {
+    type Output = Int;
 
-    fn index(&self, addr: i64) -> &Self::Output {
+    fn index(&self, addr: Int) -> &Self::Output {
         self.get(addr).expect("address out of bounds")
     }
 }
@@ -55,8 +57,8 @@ impl FromStr for Intcode {
             Ok(Self(vec![]))
         } else {
             s.split(',')
-                .map(str::parse::<i64>)
-                .collect::<Result<Vec<i64>, ParseIntError>>()
+                .map(str::parse::<Int>)
+                .collect::<Result<Vec<Int>, ParseIntError>>()
                 .map(Self)
         }
     }
