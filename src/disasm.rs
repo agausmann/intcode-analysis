@@ -35,53 +35,50 @@ pub enum Instruction {
 
     /// `rbo a` - Adds `a` to the current relative base.
     Rbo(Src),
+
+    /// Illegal opcode.
+    Ill,
 }
 
 impl Instruction {
     /// Attempts to disassemble an instruction at the given position.
-    pub fn disasm(code: &Intcode, addr: Int) -> Result<Self, DisasmError> {
+    pub fn disasm(code: &Intcode, addr: Int) -> Self {
         let opcode = code[addr] % 100;
         match opcode {
-            1 => Ok(Self::Add(
-                Src::disasm(code, addr, 1)?,
-                Src::disasm(code, addr, 2)?,
-                Dst::disasm(code, addr, 3)?,
-            )),
-            2 => Ok(Self::Mul(
-                Src::disasm(code, addr, 1)?,
-                Src::disasm(code, addr, 2)?,
-                Dst::disasm(code, addr, 3)?,
-            )),
-            3 => Ok(Self::In(Dst::disasm(code, addr, 1)?)),
-            4 => Ok(Self::Out(Src::disasm(code, addr, 1)?)),
-            5 => Ok(Self::Jt(
-                Src::disasm(code, addr, 1)?,
-                Src::disasm(code, addr, 2)?,
-            )),
-            6 => Ok(Self::Jf(
-                Src::disasm(code, addr, 1)?,
-                Src::disasm(code, addr, 2)?,
-            )),
-            7 => Ok(Self::Lt(
-                Src::disasm(code, addr, 1)?,
-                Src::disasm(code, addr, 2)?,
-                Dst::disasm(code, addr, 3)?,
-            )),
-            8 => Ok(Self::Eq(
-                Src::disasm(code, addr, 1)?,
-                Src::disasm(code, addr, 2)?,
-                Dst::disasm(code, addr, 3)?,
-            )),
-            9 => Ok(Self::Rbo(Src::disasm(code, addr, 1)?)),
-            99 => Ok(Self::Hlt),
-            _ => Err(DisasmError::BadOpcode { addr, opcode }),
+            1 => Self::Add(
+                Src::disasm(code, addr, 1),
+                Src::disasm(code, addr, 2),
+                Dst::disasm(code, addr, 3),
+            ),
+            2 => Self::Mul(
+                Src::disasm(code, addr, 1),
+                Src::disasm(code, addr, 2),
+                Dst::disasm(code, addr, 3),
+            ),
+            3 => Self::In(Dst::disasm(code, addr, 1)),
+            4 => Self::Out(Src::disasm(code, addr, 1)),
+            5 => Self::Jt(Src::disasm(code, addr, 1), Src::disasm(code, addr, 2)),
+            6 => Self::Jf(Src::disasm(code, addr, 1), Src::disasm(code, addr, 2)),
+            7 => Self::Lt(
+                Src::disasm(code, addr, 1),
+                Src::disasm(code, addr, 2),
+                Dst::disasm(code, addr, 3),
+            ),
+            8 => Self::Eq(
+                Src::disasm(code, addr, 1),
+                Src::disasm(code, addr, 2),
+                Dst::disasm(code, addr, 3),
+            ),
+            9 => Self::Rbo(Src::disasm(code, addr, 1)),
+            99 => Self::Hlt,
+            _ => Self::Ill,
         }
     }
 
     /// The length of the instruction in Intcode.
     pub fn len(&self) -> Int {
         match self {
-            Self::Hlt => 1,
+            Self::Hlt | Self::Ill => 1,
             Self::In(..) | Self::Out(..) | Self::Rbo(..) => 2,
             Self::Jt(..) | Self::Jf(..) => 3,
             Self::Add(..) | Self::Mul(..) | Self::Lt(..) | Self::Eq(..) => 4,
@@ -102,6 +99,7 @@ impl fmt::Display for Instruction {
             Self::Lt(a, b, c) => write!(f, "lt {} {} {}", a, b, c),
             Self::Eq(a, b, c) => write!(f, "eq {} {} {}", a, b, c),
             Self::Rbo(a) => write!(f, "rbo {}", a),
+            Self::Ill => write!(f, "ill"),
         }
     }
 }
@@ -122,25 +120,25 @@ pub enum Macro {
 impl Macro {
     /// Attempts to disassemble a macro at the given position. If no macro matches the instructions
     /// disassembled, then `None` is returned instead.
-    pub fn disasm(intcode: &Intcode, addr: Int) -> Result<Option<Self>, DisasmError> {
-        match Instruction::disasm(intcode, addr)? {
+    pub fn disasm(intcode: &Intcode, addr: Int) -> Option<Self> {
+        match Instruction::disasm(intcode, addr) {
             Instruction::Add(Src::Imm(0), a, b)
             | Instruction::Add(a, Src::Imm(0), b)
             | Instruction::Mul(Src::Imm(1), a, b)
             | Instruction::Mul(a, Src::Imm(1), b) => {
                 if a == Src::Imm(addr + 7) && b == Dst::Rel(0) {
-                    match Macro::disasm(intcode, addr + 4)? {
+                    match Macro::disasm(intcode, addr + 4) {
                         Some(Macro::Jmp(c)) => {
-                            return Ok(Some(Macro::Call(c)));
+                            return Some(Macro::Call(c));
                         }
                         _ => {}
                     }
                 }
-                Ok(Some(Macro::Cpy(a, b)))
+                Some(Macro::Cpy(a, b))
             }
-            Instruction::Jt(Src::Imm(x), a) if x != 0 => Ok(Some(Macro::Jmp(a))),
-            Instruction::Jf(Src::Imm(0), a) => Ok(Some(Macro::Jmp(a))),
-            _ => Ok(None),
+            Instruction::Jt(Src::Imm(x), a) if x != 0 => Some(Macro::Jmp(a)),
+            Instruction::Jf(Src::Imm(0), a) => Some(Macro::Jmp(a)),
+            _ => None,
         }
     }
 
@@ -176,10 +174,10 @@ impl MacroInstruction {
     ///
     /// First, macro disassembly is attempted. If no macro is found, then it falls back on
     /// instruction disassembly.
-    pub fn disasm(intcode: &Intcode, addr: Int) -> Result<MacroInstruction, DisasmError> {
-        match Macro::disasm(intcode, addr)? {
-            Some(mac) => Ok(Self::Macro(mac)),
-            None => Ok(Self::Instruction(Instruction::disasm(intcode, addr)?)),
+    pub fn disasm(intcode: &Intcode, addr: Int) -> MacroInstruction {
+        match Macro::disasm(intcode, addr) {
+            Some(mac) => Self::Macro(mac),
+            None => Self::Instruction(Instruction::disasm(intcode, addr)),
         }
     }
 
@@ -224,17 +222,20 @@ pub enum Src {
 
     /// Relative mode. `~x` or `*(rbo + x)`
     Rel(Int),
+
+    /// Illegal mode number.
+    Ill(Int),
 }
 
 impl Src {
-    fn disasm(code: &Intcode, addr: Int, index: u32) -> Result<Self, DisasmError> {
+    fn disasm(code: &Intcode, addr: Int, index: u32) -> Self {
         let mode = (code[addr] / 10i64.pow(index + 1)) % 10;
         let value = code[addr + index as Int];
         match mode {
-            0 => Ok(Self::Pos(value)),
-            1 => Ok(Self::Imm(value)),
-            2 => Ok(Self::Rel(value)),
-            _ => Err(DisasmError::BadSrcMode { addr, mode }),
+            0 => Self::Pos(value),
+            1 => Self::Imm(value),
+            2 => Self::Rel(value),
+            _ => Self::Ill(value),
         }
     }
 }
@@ -245,6 +246,7 @@ impl fmt::Display for Src {
             Self::Imm(x) => write!(f, "{}", x),
             Self::Pos(x) => write!(f, "*{}", x),
             Self::Rel(x) => write!(f, "~{}", x),
+            Self::Ill(x) => write!(f, "X{}", x),
         }
     }
 }
@@ -257,16 +259,19 @@ pub enum Dst {
 
     /// Relative mode. `~x` or `*(rbo + x)`
     Rel(Int),
+
+    /// Illegal mode number.
+    Ill(Int),
 }
 
 impl Dst {
-    fn disasm(code: &Intcode, addr: Int, index: u32) -> Result<Self, DisasmError> {
+    fn disasm(code: &Intcode, addr: Int, index: u32) -> Self {
         let mode = (code[addr] / 10i64.pow(index + 1)) % 10;
         let value = code[addr + index as Int];
         match mode {
-            0 => Ok(Self::Pos(value)),
-            2 => Ok(Self::Rel(value)),
-            _ => Err(DisasmError::BadDstMode { addr, mode }),
+            0 => Self::Pos(value),
+            2 => Self::Rel(value),
+            _ => Self::Ill(value),
         }
     }
 }
@@ -276,40 +281,8 @@ impl fmt::Display for Dst {
         match self {
             Self::Pos(x) => write!(f, "*{}", x),
             Self::Rel(x) => write!(f, "~{}", x),
+            Self::Ill(x) => write!(f, "X{}", x),
         }
-    }
-}
-
-/// Disassembly errors.
-#[derive(Debug)]
-pub enum DisasmError {
-    /// An illegal or unknown opcode was encountered.
-    BadOpcode { addr: Int, opcode: Int },
-
-    /// An illegal or unknown source parameter mode was encountered.
-    BadSrcMode { addr: Int, mode: Int },
-
-    /// An illegal or unknown destination parameter mode was encountered.
-    BadDstMode { addr: Int, mode: Int },
-}
-
-impl fmt::Display for DisasmError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Self::BadOpcode { addr, opcode } => write!(f, "bad opcode {} at addr {}", opcode, addr),
-            Self::BadSrcMode { addr, mode } => {
-                write!(f, "bad source parameter mode {} at addr {}", mode, addr)
-            }
-            Self::BadDstMode { addr, mode } => {
-                write!(f, "bad dest parameter mode {} at addr {}", mode, addr)
-            }
-        }
-    }
-}
-
-impl std::error::Error for DisasmError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        None
     }
 }
 
@@ -327,7 +300,7 @@ mod tests {
         let mut pos = 0;
         let mut instructions = Vec::new();
         while pos < intcode.len() {
-            let instr = Instruction::disasm(&intcode, pos).unwrap();
+            let instr = Instruction::disasm(&intcode, pos);
             pos += instr.len();
             instructions.push(instr);
         }
@@ -359,7 +332,7 @@ mod tests {
         let mut pos = 0;
         let mut instructions = Vec::new();
         while pos < intcode.len() {
-            let instr = MacroInstruction::disasm(&intcode, pos).unwrap();
+            let instr = MacroInstruction::disasm(&intcode, pos);
             pos += instr.len();
             instructions.push(instr);
         }
