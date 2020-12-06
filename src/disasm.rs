@@ -38,6 +38,7 @@ pub enum Instruction {
 }
 
 impl Instruction {
+    /// Attempts to disassemble an instruction at the given position.
     pub fn disasm(code: &Intcode, addr: Int) -> Result<Self, DisasmError> {
         let opcode = code[addr] % 100;
         match opcode {
@@ -77,6 +78,7 @@ impl Instruction {
         }
     }
 
+    /// The length of the instruction in Intcode.
     pub fn len(&self) -> Int {
         match self {
             Self::Hlt => 1,
@@ -104,7 +106,7 @@ impl fmt::Display for Instruction {
     }
 }
 
-/// Macros that can be easily picked out from a list of instructions.
+/// Macros whose patterns can be identified from a sequence of instructions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Macro {
     /// `@cpy a b` - equivalent to `add 0 a b` or `mul 1 a b`.
@@ -126,7 +128,6 @@ impl Macro {
             | Instruction::Add(a, Src::Imm(0), b)
             | Instruction::Mul(Src::Imm(1), a, b)
             | Instruction::Mul(a, Src::Imm(1), b) => {
-                //TODO confirm relative position
                 if a == Src::Imm(addr + 7) && b == Dst::Rel(0) {
                     match Macro::disasm(intcode, addr + 4)? {
                         Some(Macro::Jmp(c)) => {
@@ -143,6 +144,7 @@ impl Macro {
         }
     }
 
+    /// The length of the macro in Intcode.
     pub fn len(&self) -> Int {
         match self {
             Self::Cpy(..) => 4,
@@ -162,6 +164,7 @@ impl fmt::Display for Macro {
     }
 }
 
+/// A single macro or instruction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MacroInstruction {
     Macro(Macro),
@@ -169,6 +172,10 @@ pub enum MacroInstruction {
 }
 
 impl MacroInstruction {
+    /// Attempts to disassemble a macro or instruction at the given position.
+    ///
+    /// First, macro disassembly is attempted. If no macro is found, then it falls back on
+    /// instruction disassembly.
     pub fn disasm(intcode: &Intcode, addr: Int) -> Result<MacroInstruction, DisasmError> {
         match Macro::disasm(intcode, addr)? {
             Some(mac) => Ok(Self::Macro(mac)),
@@ -176,6 +183,7 @@ impl MacroInstruction {
         }
     }
 
+    /// The length of the macro or instruction in Intcode.
     pub fn len(&self) -> Int {
         match self {
             Self::Macro(mac) => mac.len(),
@@ -272,10 +280,16 @@ impl fmt::Display for Dst {
     }
 }
 
+/// Disassembly errors.
 #[derive(Debug)]
 pub enum DisasmError {
+    /// An illegal or unknown opcode was encountered.
     BadOpcode { addr: Int, opcode: Int },
+
+    /// An illegal or unknown source parameter mode was encountered.
     BadSrcMode { addr: Int, mode: Int },
+
+    /// An illegal or unknown destination parameter mode was encountered.
     BadDstMode { addr: Int, mode: Int },
 }
 
