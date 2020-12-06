@@ -1,4 +1,4 @@
-//! Low-level Intcode disassembly.
+//! Intcode disassembly.
 
 use crate::{Int, Intcode};
 use std::fmt;
@@ -38,7 +38,7 @@ pub enum Instruction {
 }
 
 impl Instruction {
-    pub fn disasm(code: &Intcode, addr: Int) -> Result<Instruction, DisasmError> {
+    pub fn disasm(code: &Intcode, addr: Int) -> Result<Self, DisasmError> {
         let opcode = code[addr] % 100;
         match opcode {
             1 => Ok(Self::Add(
@@ -100,6 +100,107 @@ impl fmt::Display for Instruction {
             Self::Lt(a, b, c) => write!(f, "lt {} {} {}", a, b, c),
             Self::Eq(a, b, c) => write!(f, "eq {} {} {}", a, b, c),
             Self::Rbo(a) => write!(f, "rbo {}", a),
+        }
+    }
+}
+
+/// Macros that can be easily picked out from a list of instructions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Macro {
+    /// `@cpy a b` - equivalent to `add 0 a b` or `mul 1 a b`.
+    Cpy(Src, Dst),
+
+    /// `@jmp a` - equivalent to `jt 1 a` or `jf 0 a`.
+    Jmp(Src),
+
+    /// `@call a` - equivalent to `@cpy <addr + 7> ~0; @jmp a`.
+    Call(Src),
+}
+
+impl Macro {
+    /// Attempts to disassemble a macro at the given position. If no macro matches the instructions
+    /// disassembled, then `None` is returned instead.
+    pub fn disasm(intcode: &Intcode, addr: Int) -> Result<Option<Self>, DisasmError> {
+        match Instruction::disasm(intcode, addr)? {
+            Instruction::Add(Src::Imm(0), a, b)
+            | Instruction::Add(a, Src::Imm(0), b)
+            | Instruction::Mul(Src::Imm(1), a, b)
+            | Instruction::Mul(a, Src::Imm(1), b) => {
+                //TODO confirm relative position
+                if a == Src::Imm(addr + 7) && b == Dst::Rel(0) {
+                    match Macro::disasm(intcode, addr + 4)? {
+                        Some(Macro::Jmp(c)) => {
+                            return Ok(Some(Macro::Call(c)));
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(Some(Macro::Cpy(a, b)))
+            }
+            Instruction::Jt(Src::Imm(x), a) if x != 0 => Ok(Some(Macro::Jmp(a))),
+            Instruction::Jf(Src::Imm(0), a) => Ok(Some(Macro::Jmp(a))),
+            _ => Ok(None),
+        }
+    }
+
+    pub fn len(&self) -> Int {
+        match self {
+            Self::Cpy(..) => 4,
+            Self::Jmp(..) => 6,
+            Self::Call(..) => 7,
+        }
+    }
+}
+
+impl fmt::Display for Macro {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::Cpy(a, b) => write!(f, "@cpy {} {}", a, b),
+            Self::Jmp(a) => write!(f, "@jmp {}", a),
+            Self::Call(a) => write!(f, "@call {}", a),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MacroInstruction {
+    Macro(Macro),
+    Instruction(Instruction),
+}
+
+impl MacroInstruction {
+    pub fn disasm(intcode: &Intcode, addr: Int) -> Result<MacroInstruction, DisasmError> {
+        match Macro::disasm(intcode, addr)? {
+            Some(mac) => Ok(Self::Macro(mac)),
+            None => Ok(Self::Instruction(Instruction::disasm(intcode, addr)?)),
+        }
+    }
+
+    pub fn len(&self) -> Int {
+        match self {
+            Self::Macro(mac) => mac.len(),
+            Self::Instruction(instr) => instr.len(),
+        }
+    }
+}
+
+impl From<Macro> for MacroInstruction {
+    fn from(mac: Macro) -> Self {
+        Self::Macro(mac)
+    }
+}
+
+impl From<Instruction> for MacroInstruction {
+    fn from(instr: Instruction) -> Self {
+        Self::Instruction(instr)
+    }
+}
+
+impl fmt::Display for MacroInstruction {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::Macro(mac) => write!(f, "{}", mac),
+            Self::Instruction(instr) => write!(f, "{}", instr),
         }
     }
 }
@@ -178,40 +279,83 @@ pub enum DisasmError {
     BadDstMode { addr: Int, mode: Int },
 }
 
+impl fmt::Display for DisasmError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::BadOpcode { addr, opcode } => write!(f, "bad opcode {} at addr {}", opcode, addr),
+            Self::BadSrcMode { addr, mode } => {
+                write!(f, "bad source parameter mode {} at addr {}", mode, addr)
+            }
+            Self::BadDstMode { addr, mode } => {
+                write!(f, "bad dest parameter mode {} at addr {}", mode, addr)
+            }
+        }
+    }
+}
+
+impl std::error::Error for DisasmError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const INTCODE_EXAMPLE: &str = "3,3,1108,-1,8,3,4,3,99";
-
     #[test]
-    fn disasm_in() {
-        let intcode: Intcode = INTCODE_EXAMPLE.parse().unwrap();
-        let instr = Instruction::disasm(&intcode, 0).unwrap();
-        assert_eq!(instr, Instruction::In(Dst::Pos(3)));
+    fn disasm_example_1() {
+        // Example from 2019 day 5.
+        // Note that this code is self-modifying,
+        // which cannot be detected by the disassembler.
+        let intcode: Intcode = "3,3,1108,-1,8,3,4,3,99".parse().unwrap();
+
+        let mut pos = 0;
+        let mut instructions = Vec::new();
+        while pos < intcode.len() {
+            let instr = Instruction::disasm(&intcode, pos).unwrap();
+            pos += instr.len();
+            instructions.push(instr);
+        }
+
+        let expected: Vec<Instruction> = vec![
+            Instruction::In(Dst::Pos(3)),
+            Instruction::Eq(Src::Imm(-1), Src::Imm(8), Dst::Pos(3)),
+            Instruction::Out(Src::Pos(3)),
+            Instruction::Hlt,
+        ];
+
+        assert_eq!(instructions, expected);
     }
 
     #[test]
-    fn disasm_eq() {
-        let intcode: Intcode = INTCODE_EXAMPLE.parse().unwrap();
-        let instr = Instruction::disasm(&intcode, 2).unwrap();
-        assert_eq!(
-            instr,
-            Instruction::Eq(Src::Imm(-1), Src::Imm(8), Dst::Pos(3))
-        );
-    }
+    fn disasm_example_2() {
+        // Example taken from my 2019 day 21 input, demonstrating some of the macros used by the
+        // compiled puzzle inputs. The corresponding assembly code:
+        //
+        // rbo 2050
+        //
+        // @cpy 966 ~1
+        // @call 1378
 
-    #[test]
-    fn disasm_out() {
-        let intcode: Intcode = INTCODE_EXAMPLE.parse().unwrap();
-        let instr = Instruction::disasm(&intcode, 6).unwrap();
-        assert_eq!(instr, Instruction::Out(Src::Pos(3)));
-    }
+        let intcode: Intcode = "109,2050,21102,1,966,1,21101,0,13,0,1105,1,1378"
+            .parse()
+            .unwrap();
 
-    #[test]
-    fn disasm_hlt() {
-        let intcode: Intcode = INTCODE_EXAMPLE.parse().unwrap();
-        let instr = Instruction::disasm(&intcode, 8).unwrap();
-        assert_eq!(instr, Instruction::Hlt);
+        let mut pos = 0;
+        let mut instructions = Vec::new();
+        while pos < intcode.len() {
+            let instr = MacroInstruction::disasm(&intcode, pos).unwrap();
+            pos += instr.len();
+            instructions.push(instr);
+        }
+
+        let expected: Vec<MacroInstruction> = vec![
+            Instruction::Rbo(Src::Imm(2050)).into(),
+            Macro::Cpy(Src::Imm(966), Dst::Rel(1)).into(),
+            Macro::Call(Src::Imm(1378)).into(),
+        ];
+
+        assert_eq!(instructions, expected);
     }
 }
